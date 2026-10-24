@@ -5,11 +5,16 @@
 
 import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
 import { definePluginSettings } from "@api/Settings";
+import ErrorBoundary from "@components/ErrorBoundary";
 import definePlugin, { OptionType } from "@utils/types";
-import { findByPropsLazy } from "@webpack";
-import { SelectedChannelStore, showToast } from "@webpack/common";
+import { findByPropsLazy, findComponentByCodeLazy } from "@webpack";
+import { SelectedChannelStore, showToast, useEffect, useState } from "@webpack/common";
+
+import managedStyle from "./style.css?managed";
 
 const VoiceActions = findByPropsLazy("toggleSelfDeaf", "toggleSelfMute");
+// The same button component Discord uses for mute / deafen in the user panel
+const PanelButton = findComponentByCodeLazy(".GREEN,positionKeyStemOverride:");
 
 const VOICE_STATE_UPDATE = 4;
 
@@ -17,6 +22,11 @@ const IS_MAC = navigator.platform.toLowerCase().includes("mac");
 const SHORTCUT_LABEL = IS_MAC ? "⌘ + ⌥ + D" : "Ctrl + Alt + D";
 
 const settings = definePluginSettings({
+    showPanelButton: {
+        type: OptionType.BOOLEAN,
+        description: "Show a fake deafen button next to the mute / deafen buttons",
+        default: true
+    },
     fakeMute: {
         type: OptionType.BOOLEAN,
         description: "Also appear muted while fake deafened",
@@ -36,6 +46,16 @@ const settings = definePluginSettings({
 
 let enabled = false;
 let originalSend: typeof WebSocket.prototype.send | null = null;
+const listeners = new Set<(enabled: boolean) => void>();
+
+function useFakeDeafenEnabled() {
+    const [state, setState] = useState(enabled);
+    useEffect(() => {
+        listeners.add(setState);
+        return () => void listeners.delete(setState);
+    }, []);
+    return state;
+}
 
 function patchPayload(data: unknown) {
     if (!enabled || typeof data !== "string" || !data.includes("self_deaf")) return data;
@@ -63,6 +83,7 @@ function resendVoiceState() {
 
 function toggle() {
     enabled = !enabled;
+    listeners.forEach(l => l(enabled));
     resendVoiceState();
 
     if (settings.store.showToasts) {
@@ -71,6 +92,48 @@ function toggle() {
             variant: enabled ? "success" : "default"
         });
     }
+}
+
+function FakeDeafenIcon() {
+    const on = useFakeDeafenEnabled();
+
+    return (
+        <svg width="20" height="20" viewBox="0 0 24 24">
+            <path
+                fill={on ? "var(--status-danger)" : "currentColor"}
+                mask={on ? "url(#vc-fakeDeafen-mask)" : void 0}
+                d="M12 3a9 9 0 0 0-9 9v7a2 2 0 0 0 2 2h3a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H5a7 7 0 0 1 14 0h-3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h3a2 2 0 0 0 2-2v-7a9 9 0 0 0-9-9Z"
+            />
+            {/* small "ghost" dot marks this as the fake deafen button */}
+            <circle cx="12" cy="17" r="2" fill={on ? "var(--status-danger)" : "currentColor"} />
+            {on && <>
+                <path fill="var(--status-danger)" d="M22.7 2.7a1 1 0 0 0-1.4-1.4l-20 20a1 1 0 1 0 1.4 1.4Z" />
+                <mask id="vc-fakeDeafen-mask">
+                    <rect fill="white" x="0" y="0" width="24" height="24" />
+                    <path fill="black" d="M23.27 4.73 19.27 .73 -.27 20.27 3.73 24.27Z" />
+                </mask>
+            </>}
+        </svg>
+    );
+}
+
+function FakeDeafenButton(props: { nameplate?: any; }) {
+    const { showPanelButton } = settings.use(["showPanelButton"]);
+    const on = useFakeDeafenEnabled();
+
+    if (!showPanelButton) return null;
+
+    return (
+        <PanelButton
+            tooltipText={on ? "Disable Fake Deafen" : "Enable Fake Deafen"}
+            icon={FakeDeafenIcon}
+            role="switch"
+            ariaChecked={on}
+            redGlow={on}
+            plated={props?.nameplate != null}
+            onClick={toggle}
+        />
+    );
 }
 
 // Match on e.code: on macOS, Option changes e.key (Option + D gives "∂").
@@ -88,6 +151,21 @@ export default definePlugin({
     description: "Appear deafened to others while still hearing everyone in the call",
     authors: [{ name: "You", id: 0n }],
     settings,
+    managedStyle,
+
+    patches: [
+        {
+            // User panel (avatar + mute / deafen / settings) at the bottom left
+            find: "#{intl::USER_PROFILE_ACCOUNT_POPOUT_BUTTON_A11Y_LABEL}",
+            replacement: {
+                // Tolerates buttons other plugins (e.g. GameActivityToggle) already inserted here
+                match: /children:\[(?=(?:\$self\.\w+\(arguments\[0\]\),)*.{0,25}?accountContainerRef)/,
+                replace: "children:[$self.FakeDeafenButton(arguments[0]),"
+            }
+        }
+    ],
+
+    FakeDeafenButton: ErrorBoundary.wrap(FakeDeafenButton, { noop: true }),
 
     toolboxActions: {
         "Toggle Fake Deafen": toggle
@@ -120,6 +198,7 @@ export default definePlugin({
         document.removeEventListener("keydown", onKeyDown, true);
         if (enabled) {
             enabled = false;
+            listeners.forEach(l => l(false));
             resendVoiceState();
         }
         if (originalSend) {
