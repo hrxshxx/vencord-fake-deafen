@@ -7,12 +7,13 @@ import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import definePlugin, { OptionType } from "@utils/types";
-import { findByPropsLazy, findComponentByCodeLazy } from "@webpack";
+import { findByPropsLazy, findComponentByCodeLazy, findStoreLazy } from "@webpack";
 import { SelectedChannelStore, showToast, useEffect, useState } from "@webpack/common";
 
 import managedStyle from "./style.css?managed";
 
 const VoiceActions = findByPropsLazy("toggleSelfDeaf", "toggleSelfMute");
+const GatewayConnectionStore = findStoreLazy("GatewayConnectionStore");
 // The same button component Discord uses for mute / deafen in the user panel
 const PanelButton = findComponentByCodeLazy(".GREEN,positionKeyStemOverride:");
 
@@ -46,6 +47,7 @@ const settings = definePluginSettings({
 
 let enabled = false;
 let originalSend: typeof WebSocket.prototype.send | null = null;
+let restoreGatewayHooks: (() => void) | null = null;
 const listeners = new Set<(enabled: boolean) => void>();
 
 function useFakeDeafenEnabled() {
@@ -71,6 +73,45 @@ function patchPayload(data: unknown) {
     } catch {
         return data;
     }
+}
+
+// The desktop app talks to the gateway in binary ETF, not JSON, so the WebSocket hook
+// alone never sees the voice state there. Hook Discord's gateway socket instead, before
+// the payload gets encoded, which works whatever the encoding is.
+function hookGatewaySocket() {
+    const socket = GatewayConnectionStore?.getSocket?.();
+    if (!socket) {
+        console.warn("[FakeDeafen] Gateway socket not found, only the JSON fallback is active");
+        return;
+    }
+
+    const restores: (() => void)[] = [];
+    const hook = (name: string, wrap: (orig: Function) => Function) => {
+        if (typeof socket[name] !== "function") return;
+        const hadOwn = Object.prototype.hasOwnProperty.call(socket, name);
+        const orig = socket[name];
+        socket[name] = wrap(orig);
+        restores.push(() => hadOwn ? socket[name] = orig : delete socket[name]);
+    };
+
+    hook("voiceStateUpdate", orig => function (this: any, args: any, ...rest: any[]) {
+        if (enabled && args) {
+            args = { ...args, selfDeaf: true };
+            if (settings.store.fakeMute) args.selfMute = true;
+        }
+        return orig.call(this, args, ...rest);
+    });
+
+    hook("send", orig => function (this: any, op: number, d: any, ...rest: any[]) {
+        if (enabled && op === VOICE_STATE_UPDATE && d) {
+            d = { ...d, self_deaf: true };
+            if (settings.store.fakeMute) d.self_mute = true;
+        }
+        return orig.call(this, op, d, ...rest);
+    });
+
+    console.log(`[FakeDeafen] Hooked gateway socket (${restores.length} methods)`);
+    restoreGatewayHooks = () => restores.forEach(r => r());
 }
 
 // Toggling deafen twice makes the client send two fresh voice state updates,
@@ -191,6 +232,7 @@ export default definePlugin({
         WebSocket.prototype.send = function (data) {
             return send.call(this, patchPayload(data) as any);
         };
+        hookGatewaySocket();
         document.addEventListener("keydown", onKeyDown, true);
     },
 
@@ -201,6 +243,8 @@ export default definePlugin({
             listeners.forEach(l => l(false));
             resendVoiceState();
         }
+        restoreGatewayHooks?.();
+        restoreGatewayHooks = null;
         if (originalSend) {
             WebSocket.prototype.send = originalSend;
             originalSend = null;
