@@ -13,10 +13,18 @@ const VoiceActions = findByPropsLazy("toggleSelfDeaf", "toggleSelfMute");
 
 const VOICE_STATE_UPDATE = 4;
 
+const IS_MAC = navigator.platform.toLowerCase().includes("mac");
+const SHORTCUT_LABEL = IS_MAC ? "⌘ + ⌥ + D" : "Ctrl + Alt + D";
+
 const settings = definePluginSettings({
     fakeMute: {
         type: OptionType.BOOLEAN,
         description: "Also appear muted while fake deafened",
+        default: true
+    },
+    enableShortcut: {
+        type: OptionType.BOOLEAN,
+        description: `Toggle fake deafen with ${SHORTCUT_LABEL}`,
         default: true
     },
     showToasts: {
@@ -65,6 +73,16 @@ function toggle() {
     }
 }
 
+// Match on e.code: on macOS, Option changes e.key (Option + D gives "∂").
+function onKeyDown(e: KeyboardEvent) {
+    if (!settings.store.enableShortcut || e.code !== "KeyD" || !e.altKey || e.shiftKey) return;
+    if (IS_MAC ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    toggle();
+}
+
 export default definePlugin({
     name: "FakeDeafen",
     description: "Appear deafened to others while still hearing everyone in the call",
@@ -95,9 +113,11 @@ export default definePlugin({
         WebSocket.prototype.send = function (data) {
             return send.call(this, patchPayload(data) as any);
         };
+        document.addEventListener("keydown", onKeyDown, true);
     },
 
     stop() {
+        document.removeEventListener("keydown", onKeyDown, true);
         if (enabled) {
             enabled = false;
             resendVoiceState();
