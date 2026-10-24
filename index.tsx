@@ -7,7 +7,7 @@ import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { SelectedChannelStore, showToast, Toasts } from "@webpack/common";
+import { SelectedChannelStore, showToast } from "@webpack/common";
 
 const VoiceActions = findByPropsLazy("toggleSelfDeaf", "toggleSelfMute");
 
@@ -66,10 +66,10 @@ function toggle() {
     resendVoiceState();
 
     if (settings.store.showToasts) {
-        showToast(
-            enabled ? "Fake deafen enabled" : "Fake deafen disabled",
-            enabled ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE
-        );
+        showToast({
+            text: enabled ? "Fake deafen enabled" : "Fake deafen disabled",
+            variant: enabled ? "success" : "default"
+        });
     }
 }
 
