@@ -35,6 +35,8 @@ Vencord Location and point it at `~/Vencord/dist`.
 
 ## Usage
 
+- Click the **headphones button with a dot** next to mute / deafen at the bottom left
+  (it turns red with a slash while fake deafen is on)
 - **⌘ + ⌥ + D** toggles fake deafen (Ctrl + Alt + D on Windows/Linux)
 - Toolbox → "Toggle Fake Deafen" (requires the VencordToolbox plugin)
 - `/fakedeafen` slash command
